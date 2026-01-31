@@ -56,7 +56,7 @@ def initialize_sheet_headers(sheet):
         if not headers:
             headers = ['Name', 'Week', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday', 'Total']
             sheet.update('A1:J1', [headers])
-    except:
+    except Exception:
         headers = ['Name', 'Week', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday', 'Total']
         sheet.update('A1:J1', [headers])
 
@@ -65,7 +65,7 @@ def get_all_data(sheet):
     try:
         data = sheet.get_all_records()
         return pd.DataFrame(data)
-    except:
+    except Exception:
         return pd.DataFrame()
 
 def get_user_data(sheet, name, week_string):

@@ -4,7 +4,7 @@ A simple, no-auth Streamlit app for tracking family and friends' daily step coun
 
 ## Features
 
-- **User-friendly Interface**: Select your name from a dropdown and enter daily steps
+- **User-friendly Interface**: Enter your name and log daily steps
 - **Weekly Tracking**: Monday through Sunday step entry for the current week
 - **Leaderboard**: Real-time rankings sorted by total steps
 - **Visualizations**: 
