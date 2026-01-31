@@ -64,7 +64,13 @@ def get_all_data(sheet):
     """Get all data from the sheet"""
     try:
         data = sheet.get_all_records()
-        return pd.DataFrame(data)
+        df = pd.DataFrame(data)
+        # Ensure expected columns exist to avoid KeyError on empty/malformed sheets
+        expected_cols = ['Name', 'Week', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday', 'Total']
+        for col in expected_cols:
+            if col not in df.columns:
+                df[col] = pd.NA
+        return df
     except Exception:
         return pd.DataFrame()
 
@@ -73,7 +79,10 @@ def get_user_data(sheet, name, week_string):
     all_data = get_all_data(sheet)
     if all_data.empty:
         return None
-    
+
+    if 'Name' not in all_data.columns or 'Week' not in all_data.columns:
+        return None
+
     user_data = all_data[(all_data['Name'] == name) & (all_data['Week'] == week_string)]
     if not user_data.empty:
         return user_data.iloc[0]
@@ -106,7 +115,10 @@ def get_leaderboard(sheet, week_string):
     all_data = get_all_data(sheet)
     if all_data.empty:
         return pd.DataFrame()
-    
+
+    if 'Week' not in all_data.columns:
+        return pd.DataFrame()
+
     week_data = all_data[all_data['Week'] == week_string]
     if week_data.empty:
         return pd.DataFrame()
@@ -116,7 +128,7 @@ def get_leaderboard(sheet, week_string):
     return leaderboard
 
 # App title
-st.title("🏃 Family Step Challenge")
+st.title("🏃 Family & Friends Step Challenge")
 
 # Get week information
 week_dates = get_current_week_dates()
