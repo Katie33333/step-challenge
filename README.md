@@ -1,4 +1,4 @@
-# 🏃 Family Step Challenge App
+# 🏃 Family Step Challenge App 
 
 A simple, no-auth Streamlit app for tracking family and friends' daily step counts in a weekly challenge. Data is stored in Google Sheets with a leaderboard and visualizations.
 
