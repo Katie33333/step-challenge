@@ -206,7 +206,6 @@ if sheet:
             )
         else:
             st.info("No data yet for this week. Be the first to log your steps!")
-    
     with col2:
         st.header("📊 Step Distribution")
         
@@ -217,33 +216,33 @@ if sheet:
             
             if not week_data.empty:
                 # Create histogram
-                fig = px.histogram(
-                    week_data,
-                    x='Total',
-                    nbins=10,
-                    title='Distribution of Total Steps',
-                    labels={'Total': 'Total Steps', 'count': 'Number of Participants'},
-                    color_discrete_sequence=['#1f77b4']
-                )
+                #fig = px.histogram(
+                #    week_data,
+                #    x='Total',
+                ##    nbins=10,
+                #    title='Distribution of Total Steps',
+                #    labels={'Total': 'Total Steps', 'count': 'Number of Participants'},
+                #    color_discrete_sequence=['#1f77b4']
+                #)
                 
-                fig.update_layout(
-                    showlegend=False,
-                    xaxis_title="Total Steps",
-                    yaxis_title="Number of Participants",
-                    bargap=0.1
-                )
+                #fig.update_layout(
+                #    showlegend=False,
+                #    xaxis_title="Total Steps",
+                #    yaxis_title="Number of Participants",
+                #    bargap=0.1
+                #)
                 
-                st.plotly_chart(fig, use_container_width=True)
+                #st.plotly_chart(fig, use_container_width=True)
                 
                 # Additional bar chart showing top performers
-                st.subheader("Top Performers")
+                #st.subheader("Top Performers")
                 top_10 = week_data.nlargest(10, 'Total')[['Name', 'Total']]
                 
                 fig2 = px.bar(
                     top_10,
                     x='Name',
                     y='Total',
-                    title='Top 10 Participants',
+                    #title='Top 10 Participants',
                     labels={'Total': 'Total Steps', 'Name': 'Participant'},
                     color='Total',
                     color_continuous_scale='Viridis'
@@ -258,7 +257,7 @@ if sheet:
                 st.plotly_chart(fig2, use_container_width=True)
         else:
             st.info("No data to visualize yet!")
-    
+     
     # Weekly stats
     st.header("📈 Weekly Statistics")
     all_data = get_all_data(sheet)
