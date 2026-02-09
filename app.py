@@ -60,8 +60,13 @@ def initialize_sheet_headers(sheet):
         headers = ['Name', 'Week', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday', 'Total']
         sheet.update('A1:J1', [headers])
 
+@st.cache_data(
+    ttl=30,
+    show_spinner=False,
+    hash_funcs={gspread.worksheet.Worksheet: lambda ws: ws.id}
+)
 def get_all_data(sheet):
-    """Get all data from the sheet"""
+    """Get all data from the sheet (cached to reduce API calls)"""
     try:
         data = sheet.get_all_records()
         df = pd.DataFrame(data)
@@ -90,6 +95,8 @@ def get_user_data(sheet, name, week_string):
 
 def save_user_data(sheet, name, week_string, steps):
     """Save user's step data for the week"""
+    # Ensure we read fresh data when saving
+    get_all_data.clear()
     all_data = get_all_data(sheet)
     
     # Calculate total
@@ -105,10 +112,12 @@ def save_user_data(sheet, name, week_string, steps):
             # Update existing row
             row_num = user_week_data.index[0] + 2  # +2 because index is 0-based and sheet has header
             sheet.update(f'A{row_num}:J{row_num}', [row_data])
+            get_all_data.clear()
             return
     
     # Append new row
     sheet.append_row(row_data)
+    get_all_data.clear()
 
 def get_leaderboard(sheet, week_string):
     """Get leaderboard for the current week"""

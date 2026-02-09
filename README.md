@@ -8,7 +8,6 @@ A simple, no-auth Streamlit app for tracking family and friends' daily step coun
 - **Weekly Tracking**: Monday through Sunday step entry for the current week
 - **Leaderboard**: Real-time rankings sorted by total steps
 - **Visualizations**: 
-  - Histogram showing step distribution
   - Bar chart of top performers
 - **Weekly Statistics**: Total participants, combined steps, averages, and top scores
 - **Google Sheets Integration**: All data stored in a shared Google Sheet
