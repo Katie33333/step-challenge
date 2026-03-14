@@ -10,6 +10,9 @@ A simple, no-auth Streamlit app for tracking family and friends' daily step coun
 - **Visualizations**: 
   - Histogram showing step distribution
   - Bar chart of top performers
+- **Message Board**:
+   - Quick posting form (name + short message)
+   - Messages shown below the leaderboard for the current week plus a 1-day grace period
 - **Weekly Statistics**: Total participants, combined steps, averages, and top scores
 - **Google Sheets Integration**: All data stored in a shared Google Sheet
 
@@ -75,6 +78,16 @@ pip install -r requirements.txt
 
 ### 4. Run the App
 
+#### Option A: one command with Make
+
+```bash
+make run
+```
+
+This will create `.venv` (if needed), install dependencies, and start Streamlit.
+
+#### Option B: manual commands
+
 ```bash
 streamlit run app.py
 ```
@@ -102,11 +115,18 @@ The app will open in your browser at `http://localhost:8501`
 
 ## Data Structure
 
-The Google Sheet will automatically be structured with the following columns:
+The Google spreadsheet uses two worksheets:
+
+### `Sheet1` (step data)
 - Name
 - Week (date range)
 - Monday through Sunday (daily steps)
 - Total (auto-calculated)
+
+### `Messages` (message board)
+- Timestamp
+- Name
+- Message
 
 ## Contributing
 
