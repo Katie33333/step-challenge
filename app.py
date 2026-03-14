@@ -20,6 +20,9 @@ SCOPES = [
     'https://www.googleapis.com/auth/drive'
 ]
 
+TARGET_DAILY_STEPS_PER_PERSON = 6000
+WEEK_DAYS = 7
+
 def get_google_sheet():
     """Connect to Google Sheets and return worksheets for steps and messages."""
     try:
@@ -176,7 +179,7 @@ def get_recent_messages(message_sheet, week_dates, limit=50):
         return pd.DataFrame(columns=['Timestamp', 'Name', 'Message'])
 
 # App title
-st.title("🏃 Family & Friends Step Challenge")
+st.title("Step Challenge")
 
 # Get week information
 week_dates = get_current_week_dates()
@@ -228,9 +231,35 @@ if sheet and message_sheet:
             st.sidebar.success("✅ Steps saved successfully!")
             st.rerun()
     
+    # Weekly challenge status
+    st.header("🎯 Weekly Challenge Status")
+    all_data = get_all_data(sheet)
+    week_data = all_data[all_data['Week'] == week_string]
+
+    if not week_data.empty:
+        avg_daily_per_person = week_data['Total'].mean() / WEEK_DAYS
+        progress_ratio = min(avg_daily_per_person / TARGET_DAILY_STEPS_PER_PERSON, 1.0)
+
+        st.progress(float(progress_ratio))
+        st.caption(
+            f"Team average: {int(avg_daily_per_person):,} / {TARGET_DAILY_STEPS_PER_PERSON:,} steps per person per day"
+        )
+
+        if avg_daily_per_person >= TARGET_DAILY_STEPS_PER_PERSON:
+            st.success("Goal reached! Keep it going this week.")
+        else:
+            steps_remaining = TARGET_DAILY_STEPS_PER_PERSON - avg_daily_per_person
+            st.info(f"Need {int(steps_remaining):,} more average daily steps per person to hit the goal.")
+    else:
+        st.progress(0.0)
+        st.caption(f"Team average: 0 / {TARGET_DAILY_STEPS_PER_PERSON:,} steps per person per day")
+        st.info("No step entries yet for this week.")
+
+    st.divider()
+
     # Main content area - Leaderboard and Visualization
     col1, col2 = st.columns([1, 1])
-    
+   
     with col1:
         st.header("🏆 Leaderboard")
         leaderboard = get_leaderboard(sheet, week_string)
@@ -247,7 +276,7 @@ if sheet and message_sheet:
                 hide_index=True,
                 use_container_width=True,
                 column_config={
-                    "Rank": st.column_config.NumberColumn("🏅 Rank", width="small"),
+                    "Rank": st.column_config.NumberColumn("Rank", width="small"),
                     "Name": st.column_config.TextColumn("Name", width="medium"),
                     "Total": st.column_config.TextColumn("Total Steps", width="medium")
                 }
@@ -255,113 +284,61 @@ if sheet and message_sheet:
         else:
             st.info("No data yet for this week. Be the first to log your steps!")
 
-        st.divider()
-        st.subheader("💬 Message Board")
-        st.caption("Post a quick update. Recent messages appear below.")
+    st.divider()
+    st.subheader("💬 Message Board")
+    st.caption("Post a quick update. Recent messages appear below.")
 
-        with st.form("message_board_form", clear_on_submit=True):
-            default_name = user_name if user_name else ""
-            message_name = st.text_input("Name", value=default_name, max_chars=40)
-            message_text = st.text_input("Message", max_chars=200, placeholder="Great job team! Keep moving 👟")
-            posted = st.form_submit_button("Post Message")
+    with st.form("message_board_form", clear_on_submit=True):
+        default_name = user_name if user_name else ""
+        message_name = st.text_input("Name", value=default_name, max_chars=40)
+        message_text = st.text_input("Message", max_chars=200, placeholder="Great job team! Keep moving 👟")
+        posted = st.form_submit_button("Post Message")
 
-        if posted:
-            if not message_name.strip():
-                st.warning("Please enter your name before posting.")
-            elif not message_text.strip():
-                st.warning("Please enter a message.")
-            else:
-                post_message(message_sheet, message_name, message_text)
-                st.success("Message posted!")
-                st.rerun()
-
-        recent_messages = get_recent_messages(message_sheet, week_dates=week_dates, limit=50)
-        if recent_messages.empty:
-            st.info("No messages yet. Start the conversation!")
+    if posted:
+        if not message_name.strip():
+            st.warning("Please enter your name before posting.")
+        elif not message_text.strip():
+            st.warning("Please enter a message.")
         else:
-            for _, row in recent_messages.iterrows():
-                st.markdown(f"**{row['Name']}**")
-                st.write(row['Message'])
-                st.caption(row['Timestamp'])
-                st.divider()
-    with col2:
-        st.header("📊 Step Distribution")
-        
-        if not leaderboard.empty:
-            # Get full data for histogram
-            all_data = get_all_data(sheet)
-            week_data = all_data[all_data['Week'] == week_string]
-            
-            if not week_data.empty:
-                # Create histogram
-                #fig = px.histogram(
-                #    week_data,
-                #    x='Total',
-                ##    nbins=10,
-                #    title='Distribution of Total Steps',
-                #    labels={'Total': 'Total Steps', 'count': 'Number of Participants'},
-                #    color_discrete_sequence=['#1f77b4']
-                #)
-                
-                #fig.update_layout(
-                #    showlegend=False,
-                #    xaxis_title="Total Steps",
-                #    yaxis_title="Number of Participants",
-                #    bargap=0.1
-                #)
-                
-                #st.plotly_chart(fig, use_container_width=True)
-                
-                # Additional bar chart showing top performers
-                #st.subheader("Top Performers")
-                top_10 = week_data.nlargest(10, 'Total')[['Name', 'Total']]
-                
-                fig2 = px.bar(
-                    top_10,
-                    x='Name',
-                    y='Total',
-                    #title='Top 10 Participants',
-                    labels={'Total': 'Total Steps', 'Name': 'Participant'},
-                    color='Total',
-                    color_continuous_scale='Viridis'
-                )
-                
-                fig2.update_layout(
-                    showlegend=False,
-                    xaxis_title="Participant",
-                    yaxis_title="Total Steps"
-                )
-                
-                st.plotly_chart(fig2, use_container_width=True)
-        else:
-            st.info("No data to visualize yet!")
+            post_message(message_sheet, message_name, message_text)
+            st.success("Message posted!")
+            st.rerun()
+
+    recent_messages = get_recent_messages(message_sheet, week_dates=week_dates, limit=50)
+    if recent_messages.empty:
+        st.info("No messages yet. Start the conversation!")
+    else:
+        for _, row in recent_messages.iterrows():
+            st.markdown(f"**{row['Name']}**")
+            st.write(row['Message'])
+            st.caption(row['Timestamp'])
+            st.divider()
      
     # Weekly stats
     st.header("📈 Weekly Statistics")
-    all_data = get_all_data(sheet)
-    week_data = all_data[all_data['Week'] == week_string]
     
     if not week_data.empty:
         col1, col2, col3, col4, col5 = st.columns(5)
         
         with col1:
-            st.metric("👥 Total Participants", len(week_data))
+            st.metric("Total Participants", len(week_data))
         
         with col2:
-            total_steps = week_data['Total'].sum()
-            st.metric("👟 Total Steps", f"{int(total_steps):,}")
-        
+            avg_daily_per_person = week_data['Total'].mean() / WEEK_DAYS
+            st.metric("Avg Daily / Person", f"{int(avg_daily_per_person):,}")
+
         with col3:
-            avg_steps = week_data['Total'].mean()
-            st.metric("📊 Average Steps", f"{int(avg_steps):,}")
+            total_steps = week_data['Total'].sum()
+            st.metric("Total Steps", f"{int(total_steps):,}")
         
         with col4:
-            max_steps = week_data['Total'].max()
-            st.metric("🏅 Highest Steps", f"{int(max_steps):,}")
-
+            avg_steps = week_data['Total'].mean()
+            st.metric("Average Steps", f"{int(avg_steps):,}")
+        
         with col5:
-            avg_daily_per_person = week_data['Total'].mean() / 7
-            st.metric("📅 Avg Daily / Person", f"{int(avg_daily_per_person):,}")
+            max_steps = week_data['Total'].max()
+            st.metric("Highest Steps", f"{int(max_steps):,}")
+
     
 else:
     st.warning("Unable to connect to Google Sheets. Please configure your credentials.")
