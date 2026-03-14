@@ -1,6 +1,7 @@
 import streamlit as st
 import gspread
 from google.oauth2.service_account import Credentials
+from gspread.exceptions import WorksheetNotFound
 import pandas as pd
 from datetime import datetime, timedelta
 import plotly.express as px
@@ -20,19 +21,29 @@ SCOPES = [
 ]
 
 def get_google_sheet():
-    """Connect to Google Sheets"""
+    """Connect to Google Sheets and return worksheets for steps and messages."""
     try:
         creds = Credentials.from_service_account_info(
             st.secrets["gcp_service_account"],
             scopes=SCOPES
         )
         client = gspread.authorize(creds)
-        sheet = client.open("Step Challenge").sheet1
-        return sheet
+        spreadsheet = client.open("Step Challenge")
+
+        # Keep existing weekly step data in the first worksheet.
+        step_sheet = spreadsheet.sheet1
+
+        # Create or reuse a dedicated worksheet for chat-style messages.
+        try:
+            message_sheet = spreadsheet.worksheet("Messages")
+        except WorksheetNotFound:
+            message_sheet = spreadsheet.add_worksheet(title="Messages", rows=1000, cols=3)
+
+        return step_sheet, message_sheet
     except Exception as e:
         st.error(f"Error connecting to Google Sheets: {e}")
         st.info("Please make sure you have configured the Google Sheets credentials in .streamlit/secrets.toml")
-        return None
+        return None, None
 
 def get_current_week_dates():
     """Get Monday-Sunday dates for the current week"""
@@ -49,16 +60,23 @@ def get_week_string(dates):
     """Format week range as string"""
     return f"{dates[0].strftime('%b %d')} - {dates[6].strftime('%b %d, %Y')}"
 
-def initialize_sheet_headers(sheet):
-    """Initialize the Google Sheet with headers if empty"""
+def initialize_sheet_headers(step_sheet, message_sheet):
+    """Initialize headers for both worksheets if missing."""
     try:
-        headers = sheet.row_values(1)
+        headers = step_sheet.row_values(1)
         if not headers:
             headers = ['Name', 'Week', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday', 'Total']
-            sheet.update('A1:J1', [headers])
+            step_sheet.update('A1:J1', [headers])
     except Exception:
         headers = ['Name', 'Week', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday', 'Total']
-        sheet.update('A1:J1', [headers])
+        step_sheet.update('A1:J1', [headers])
+
+    try:
+        message_headers = message_sheet.row_values(1)
+        if not message_headers:
+            message_sheet.update('A1:C1', [['Timestamp', 'Name', 'Message']])
+    except Exception:
+        message_sheet.update('A1:C1', [['Timestamp', 'Name', 'Message']])
 
 def get_all_data(sheet):
     """Get all data from the sheet"""
@@ -127,6 +145,36 @@ def get_leaderboard(sheet, week_string):
     leaderboard = week_data[['Name', 'Total']].sort_values('Total', ascending=False)
     return leaderboard
 
+def post_message(message_sheet, name, message):
+    """Append a message with a timestamp to the message worksheet."""
+    timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    message_sheet.append_row([timestamp, name.strip(), message.strip()])
+
+def get_recent_messages(message_sheet, week_dates, limit=50):
+    """Return messages from current week plus one day, ordered oldest->newest."""
+    try:
+        data = message_sheet.get_all_records()
+        if not data:
+            return pd.DataFrame(columns=['Timestamp', 'Name', 'Message'])
+
+        df = pd.DataFrame(data)
+        for col in ['Timestamp', 'Name', 'Message']:
+            if col not in df.columns:
+                df[col] = pd.NA
+
+        df['ParsedTimestamp'] = pd.to_datetime(df['Timestamp'], errors='coerce')
+
+        # Show only this challenge week with a one-day grace period before week start.
+        # Example: if week starts Monday, include messages from Sunday 00:00 onward.
+        window_start = (week_dates[0] - timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
+        window_end = week_dates[6].replace(hour=23, minute=59, second=59, microsecond=999999)
+
+        filtered = df[(df['ParsedTimestamp'] >= window_start) & (df['ParsedTimestamp'] <= window_end)]
+        recent = filtered.sort_values('ParsedTimestamp', ascending=False).head(limit)
+        return recent.sort_values('ParsedTimestamp', ascending=True)[['Timestamp', 'Name', 'Message']]
+    except Exception:
+        return pd.DataFrame(columns=['Timestamp', 'Name', 'Message'])
+
 # App title
 st.title("🏃 Family & Friends Step Challenge")
 
@@ -136,10 +184,10 @@ week_string = get_week_string(week_dates)
 st.subheader(f"Week: {week_string}")
 
 # Connect to Google Sheets
-sheet = get_google_sheet()
+sheet, message_sheet = get_google_sheet()
 
-if sheet:
-    initialize_sheet_headers(sheet)
+if sheet and message_sheet:
+    initialize_sheet_headers(sheet, message_sheet)
     
     # Sidebar for name selection and data entry
     st.sidebar.header("Enter Your Steps")
@@ -206,6 +254,36 @@ if sheet:
             )
         else:
             st.info("No data yet for this week. Be the first to log your steps!")
+
+        st.divider()
+        st.subheader("💬 Message Board")
+        st.caption("Post a quick update. Recent messages appear below.")
+
+        with st.form("message_board_form", clear_on_submit=True):
+            default_name = user_name if user_name else ""
+            message_name = st.text_input("Name", value=default_name, max_chars=40)
+            message_text = st.text_input("Message", max_chars=200, placeholder="Great job team! Keep moving 👟")
+            posted = st.form_submit_button("Post Message")
+
+        if posted:
+            if not message_name.strip():
+                st.warning("Please enter your name before posting.")
+            elif not message_text.strip():
+                st.warning("Please enter a message.")
+            else:
+                post_message(message_sheet, message_name, message_text)
+                st.success("Message posted!")
+                st.rerun()
+
+        recent_messages = get_recent_messages(message_sheet, week_dates=week_dates, limit=50)
+        if recent_messages.empty:
+            st.info("No messages yet. Start the conversation!")
+        else:
+            for _, row in recent_messages.iterrows():
+                st.markdown(f"**{row['Name']}**")
+                st.write(row['Message'])
+                st.caption(row['Timestamp'])
+                st.divider()
     with col2:
         st.header("📊 Step Distribution")
         
@@ -264,7 +342,7 @@ if sheet:
     week_data = all_data[all_data['Week'] == week_string]
     
     if not week_data.empty:
-        col1, col2, col3, col4 = st.columns(4)
+        col1, col2, col3, col4, col5 = st.columns(5)
         
         with col1:
             st.metric("👥 Total Participants", len(week_data))
@@ -280,6 +358,10 @@ if sheet:
         with col4:
             max_steps = week_data['Total'].max()
             st.metric("🏅 Highest Steps", f"{int(max_steps):,}")
+
+        with col5:
+            avg_daily_per_person = week_data['Total'].mean() / 7
+            st.metric("📅 Avg Daily / Person", f"{int(avg_daily_per_person):,}")
     
 else:
     st.warning("Unable to connect to Google Sheets. Please configure your credentials.")
