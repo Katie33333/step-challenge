@@ -78,9 +78,11 @@ def initialize_sheet_headers(step_sheet, message_sheet):
     try:
         message_headers = message_sheet.row_values(1)
         if not message_headers:
-            message_sheet.update('A1:C1', [['Timestamp', 'Name', 'Message']])
+            message_sheet.update('A1:D1', [['Timestamp', 'Name', 'Message', 'Likes']])
+        elif 'Likes' not in message_headers:
+            message_sheet.update('D1', 'Likes')
     except Exception:
-        message_sheet.update('A1:C1', [['Timestamp', 'Name', 'Message']])
+        message_sheet.update('A1:D1', [['Timestamp', 'Name', 'Message', 'Likes']])
 
 def get_all_data(sheet):
     """Get all data from the sheet"""
@@ -152,21 +154,37 @@ def get_leaderboard(sheet, week_string):
 def post_message(message_sheet, name, message):
     """Append a message with a timestamp to the message worksheet."""
     timestamp = datetime.now(CENTRAL_TZ).strftime('%Y-%m-%d %H:%M:%S')
-    message_sheet.append_row([timestamp, name.strip(), message.strip()])
+    message_sheet.append_row([timestamp, name.strip(), message.strip(), 0])
+
+def increment_message_like(message_sheet, row_number, current_likes):
+    """Increment thumbs-up count for a message row."""
+    new_likes = int(current_likes) + 1
+    message_sheet.update_cell(row_number, 4, new_likes)
 
 def get_recent_messages(message_sheet, week_dates, limit=50):
     """Return messages from current week plus one day, ordered newest->oldest."""
     try:
-        data = message_sheet.get_all_records()
-        if not data:
-            return pd.DataFrame(columns=['Timestamp', 'Name', 'Message'])
+        values = message_sheet.get_all_values()
+        if len(values) <= 1:
+            return pd.DataFrame(columns=['RowNumber', 'Timestamp', 'Name', 'Message', 'Likes'])
 
-        df = pd.DataFrame(data)
-        for col in ['Timestamp', 'Name', 'Message']:
+        headers = values[0]
+        rows = []
+        for sheet_row_index, row_values in enumerate(values[1:], start=2):
+            row_dict = {header: row_values[i] if i < len(row_values) else '' for i, header in enumerate(headers)}
+            row_dict['RowNumber'] = sheet_row_index
+            rows.append(row_dict)
+
+        df = pd.DataFrame(rows)
+        for col in ['Timestamp', 'Name', 'Message', 'Likes', 'RowNumber']:
             if col not in df.columns:
                 df[col] = pd.NA
 
-        df['ParsedTimestamp'] = pd.to_datetime(df['Timestamp'], errors='coerce')
+        # Stored message timestamps are Central local time strings; localize them so
+        # comparisons against Central-aware week boundaries work reliably.
+        parsed = pd.to_datetime(df['Timestamp'], errors='coerce')
+        df['ParsedTimestamp'] = parsed.dt.tz_localize(CENTRAL_TZ)
+        df['Likes'] = pd.to_numeric(df['Likes'], errors='coerce').fillna(0).astype(int)
 
         # Show only this challenge week with a one-day grace period before week start.
         # Week boundaries are based on Central Time.
@@ -176,9 +194,9 @@ def get_recent_messages(message_sheet, week_dates, limit=50):
 
         filtered = df[(df['ParsedTimestamp'] >= window_start) & (df['ParsedTimestamp'] <= window_end)]
         recent = filtered.sort_values('ParsedTimestamp', ascending=False).head(limit)
-        return recent[['Timestamp', 'Name', 'Message']]
+        return recent[['RowNumber', 'Timestamp', 'Name', 'Message', 'Likes']]
     except Exception:
-        return pd.DataFrame(columns=['Timestamp', 'Name', 'Message'])
+        return pd.DataFrame(columns=['RowNumber', 'Timestamp', 'Name', 'Message', 'Likes'])
 
 def get_past_week_team_record(all_data, current_week):
     """Return highest team total from weeks before the current week."""
@@ -214,6 +232,9 @@ sheet, message_sheet = get_google_sheet()
 
 if sheet and message_sheet:
     initialize_sheet_headers(sheet, message_sheet)
+
+    if 'liked_message_rows' not in st.session_state:
+        st.session_state['liked_message_rows'] = set()
     
     # Sidebar for name selection and data entry
     st.sidebar.header("Enter Your Steps")
@@ -255,7 +276,7 @@ if sheet and message_sheet:
             st.rerun()
     
     # Weekly challenge status
-    st.header("🎯 Weekly Challenge Status")
+    st.header("Group Goal")
     all_data = get_all_data(sheet)
     week_data = all_data[all_data['Week'] == week_string].copy()
     week_data['Total'] = pd.to_numeric(week_data['Total'], errors='coerce').fillna(0)
@@ -355,9 +376,22 @@ if sheet and message_sheet:
         st.info("No messages yet. Start the conversation!")
     else:
         for _, row in recent_messages.iterrows():
-            st.markdown(f"**{row['Name']}**")
-            st.write(row['Message'])
-            st.caption(row['Timestamp'])
+            row_number = int(row['RowNumber'])
+            already_liked = row_number in st.session_state['liked_message_rows']
+            message_col, like_col = st.columns([6, 1])
+
+            with message_col:
+                st.markdown(f"**{row['Name']}**")
+                st.write(row['Message'])
+                st.caption(row['Timestamp'])
+
+            with like_col:
+                like_label = f"👍 {int(row['Likes'])}"
+                if st.button(like_label, key=f"like_{row_number}", disabled=already_liked):
+                    increment_message_like(message_sheet, row_number, int(row['Likes']))
+                    st.session_state['liked_message_rows'].add(row_number)
+                    st.rerun()
+
             st.divider()
      
     # Weekly stats
