@@ -4,6 +4,7 @@ from google.oauth2.service_account import Credentials
 from gspread.exceptions import WorksheetNotFound
 import pandas as pd
 from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 import plotly.express as px
 import plotly.graph_objects as go
 
@@ -20,7 +21,7 @@ SCOPES = [
     'https://www.googleapis.com/auth/drive'
 ]
 
-TARGET_DAILY_STEPS_PER_PERSON = 6000
+CENTRAL_TZ = ZoneInfo("America/Chicago")
 WEEK_DAYS = 7
 
 def get_google_sheet():
@@ -50,9 +51,9 @@ def get_google_sheet():
 
 def get_current_week_dates():
     """Get Monday-Sunday dates for the current week"""
-    today = datetime.now()
+    today = datetime.now(CENTRAL_TZ)
     # Find Monday of current week (0 = Monday, 6 = Sunday)
-    monday = today - timedelta(days=today.weekday())
+    monday = (today - timedelta(days=today.weekday())).replace(hour=0, minute=0, second=0, microsecond=0)
     week_dates = []
     for i in range(7):
         date = monday + timedelta(days=i)
@@ -77,9 +78,11 @@ def initialize_sheet_headers(step_sheet, message_sheet):
     try:
         message_headers = message_sheet.row_values(1)
         if not message_headers:
-            message_sheet.update('A1:C1', [['Timestamp', 'Name', 'Message']])
+            message_sheet.update('A1:D1', [['Timestamp', 'Name', 'Message', 'Likes']])
+        elif 'Likes' not in message_headers:
+            message_sheet.update('D1', 'Likes')
     except Exception:
-        message_sheet.update('A1:C1', [['Timestamp', 'Name', 'Message']])
+        message_sheet.update('A1:D1', [['Timestamp', 'Name', 'Message', 'Likes']])
 
 def get_all_data(sheet):
     """Get all data from the sheet"""
@@ -150,33 +153,70 @@ def get_leaderboard(sheet, week_string):
 
 def post_message(message_sheet, name, message):
     """Append a message with a timestamp to the message worksheet."""
-    timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-    message_sheet.append_row([timestamp, name.strip(), message.strip()])
+    timestamp = datetime.now(CENTRAL_TZ).strftime('%Y-%m-%d %H:%M:%S')
+    message_sheet.append_row([timestamp, name.strip(), message.strip(), 0])
+
+def increment_message_like(message_sheet, row_number, current_likes):
+    """Increment thumbs-up count for a message row."""
+    new_likes = int(current_likes) + 1
+    message_sheet.update_cell(row_number, 4, new_likes)
 
 def get_recent_messages(message_sheet, week_dates, limit=50):
-    """Return messages from current week plus one day, ordered oldest->newest."""
+    """Return messages from current week plus one day, ordered newest->oldest."""
     try:
-        data = message_sheet.get_all_records()
-        if not data:
-            return pd.DataFrame(columns=['Timestamp', 'Name', 'Message'])
+        values = message_sheet.get_all_values()
+        if len(values) <= 1:
+            return pd.DataFrame(columns=['RowNumber', 'Timestamp', 'Name', 'Message', 'Likes'])
 
-        df = pd.DataFrame(data)
-        for col in ['Timestamp', 'Name', 'Message']:
+        headers = values[0]
+        rows = []
+        for sheet_row_index, row_values in enumerate(values[1:], start=2):
+            row_dict = {header: row_values[i] if i < len(row_values) else '' for i, header in enumerate(headers)}
+            row_dict['RowNumber'] = sheet_row_index
+            rows.append(row_dict)
+
+        df = pd.DataFrame(rows)
+        for col in ['Timestamp', 'Name', 'Message', 'Likes', 'RowNumber']:
             if col not in df.columns:
                 df[col] = pd.NA
 
-        df['ParsedTimestamp'] = pd.to_datetime(df['Timestamp'], errors='coerce')
+        # Stored message timestamps are Central local time strings; localize them so
+        # comparisons against Central-aware week boundaries work reliably.
+        parsed = pd.to_datetime(df['Timestamp'], errors='coerce')
+        df['ParsedTimestamp'] = parsed.dt.tz_localize(CENTRAL_TZ)
+        df['Likes'] = pd.to_numeric(df['Likes'], errors='coerce').fillna(0).astype(int)
 
         # Show only this challenge week with a one-day grace period before week start.
+        # Week boundaries are based on Central Time.
         # Example: if week starts Monday, include messages from Sunday 00:00 onward.
         window_start = (week_dates[0] - timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
         window_end = week_dates[6].replace(hour=23, minute=59, second=59, microsecond=999999)
 
         filtered = df[(df['ParsedTimestamp'] >= window_start) & (df['ParsedTimestamp'] <= window_end)]
         recent = filtered.sort_values('ParsedTimestamp', ascending=False).head(limit)
-        return recent.sort_values('ParsedTimestamp', ascending=True)[['Timestamp', 'Name', 'Message']]
+        return recent[['RowNumber', 'Timestamp', 'Name', 'Message', 'Likes']]
     except Exception:
-        return pd.DataFrame(columns=['Timestamp', 'Name', 'Message'])
+        return pd.DataFrame(columns=['RowNumber', 'Timestamp', 'Name', 'Message', 'Likes'])
+
+def get_past_week_team_record(all_data, current_week):
+    """Return highest team total from weeks before the current week."""
+    if all_data.empty or 'Week' not in all_data.columns or 'Total' not in all_data.columns:
+        return None
+
+    historical = all_data[all_data['Week'] != current_week].copy()
+    if historical.empty:
+        return None
+
+    historical['Total'] = pd.to_numeric(historical['Total'], errors='coerce').fillna(0)
+    weekly_totals = historical.groupby('Week', as_index=False)['Total'].sum()
+    if weekly_totals.empty:
+        return None
+
+    best_week = weekly_totals.loc[weekly_totals['Total'].idxmax()]
+    return {
+        'week': best_week['Week'],
+        'total': int(best_week['Total'])
+    }
 
 # App title
 st.title("Step Challenge")
@@ -185,12 +225,16 @@ st.title("Step Challenge")
 week_dates = get_current_week_dates()
 week_string = get_week_string(week_dates)
 st.subheader(f"Week: {week_string}")
+st.info("Tip: Click the arrow in the top-left corner to open the sidebar and enter your steps.")
 
 # Connect to Google Sheets
 sheet, message_sheet = get_google_sheet()
 
 if sheet and message_sheet:
     initialize_sheet_headers(sheet, message_sheet)
+
+    if 'liked_message_rows' not in st.session_state:
+        st.session_state['liked_message_rows'] = set()
     
     # Sidebar for name selection and data entry
     st.sidebar.header("Enter Your Steps")
@@ -232,28 +276,51 @@ if sheet and message_sheet:
             st.rerun()
     
     # Weekly challenge status
-    st.header("🎯 Weekly Challenge Status")
+    st.header("Group Goal")
     all_data = get_all_data(sheet)
-    week_data = all_data[all_data['Week'] == week_string]
+    week_data = all_data[all_data['Week'] == week_string].copy()
+    week_data['Total'] = pd.to_numeric(week_data['Total'], errors='coerce').fillna(0)
+    current_team_total = int(week_data['Total'].sum())
+    record = get_past_week_team_record(all_data, week_string)
 
-    if not week_data.empty:
-        avg_daily_per_person = week_data['Total'].mean() / WEEK_DAYS
-        progress_ratio = min(avg_daily_per_person / TARGET_DAILY_STEPS_PER_PERSON, 1.0)
+    if record:
+        goal_total = record['total']
+        progress_ratio = min(current_team_total / goal_total, 1.0) if goal_total > 0 else 0
 
-        st.progress(float(progress_ratio))
-        st.caption(
-            f"Team average: {int(avg_daily_per_person):,} / {TARGET_DAILY_STEPS_PER_PERSON:,} steps per person per day"
+        # Thermometer-style gauge for current week progress vs record goal.
+        thermometer = go.Figure(
+            go.Indicator(
+                mode="gauge+number",
+                value=current_team_total,
+                number={'valueformat': ',d', 'suffix': ' steps'},
+                gauge={
+                    'axis': {'range': [0, goal_total], 'tickformat': ',d'},
+                    'bar': {'color': '#E4572E'},
+                    'steps': [
+                        {'range': [0, goal_total], 'color': '#FBE9E5'}
+                    ],
+                    'threshold': {
+                        'line': {'color': '#2E7D32', 'width': 4},
+                        'thickness': 0.8,
+                        'value': goal_total
+                    }
+                },
+                title={'text': 'Current Team Total'}
+            )
         )
+        thermometer.update_layout(height=240, margin=dict(l=20, r=20, t=50, b=20))
+        st.plotly_chart(thermometer, use_container_width=True)
 
-        if avg_daily_per_person >= TARGET_DAILY_STEPS_PER_PERSON:
-            st.success("Goal reached! Keep it going this week.")
+        st.caption(f"Goal to beat: {goal_total:,} steps ({record['week']})")
+        st.caption(f"Progress: {progress_ratio * 100:.1f}%")
+        if current_team_total >= goal_total:
+            st.success("Record matched or beaten. New challenge: maintain or push higher.")
         else:
-            steps_remaining = TARGET_DAILY_STEPS_PER_PERSON - avg_daily_per_person
-            st.info(f"Need {int(steps_remaining):,} more average daily steps per person to hit the goal.")
+            remaining = goal_total - current_team_total
+            st.info(f"{remaining:,} more steps needed this week to beat the record.")
     else:
-        st.progress(0.0)
-        st.caption(f"Team average: 0 / {TARGET_DAILY_STEPS_PER_PERSON:,} steps per person per day")
-        st.info("No step entries yet for this week.")
+        st.info("No prior weeks yet. This week sets the benchmark to beat.")
+        st.metric("Current Team Total", f"{current_team_total:,}")
 
     st.divider()
 
@@ -309,9 +376,22 @@ if sheet and message_sheet:
         st.info("No messages yet. Start the conversation!")
     else:
         for _, row in recent_messages.iterrows():
-            st.markdown(f"**{row['Name']}**")
-            st.write(row['Message'])
-            st.caption(row['Timestamp'])
+            row_number = int(row['RowNumber'])
+            already_liked = row_number in st.session_state['liked_message_rows']
+            message_col, like_col = st.columns([6, 1])
+
+            with message_col:
+                st.markdown(f"**{row['Name']}**")
+                st.write(row['Message'])
+                st.caption(row['Timestamp'])
+
+            with like_col:
+                like_label = f"👍 {int(row['Likes'])}"
+                if st.button(like_label, key=f"like_{row_number}", disabled=already_liked):
+                    increment_message_like(message_sheet, row_number, int(row['Likes']))
+                    st.session_state['liked_message_rows'].add(row_number)
+                    st.rerun()
+
             st.divider()
      
     # Weekly stats
@@ -339,7 +419,6 @@ if sheet and message_sheet:
             max_steps = week_data['Total'].max()
             st.metric("Highest Steps", f"{int(max_steps):,}")
 
-    
 else:
     st.warning("Unable to connect to Google Sheets. Please configure your credentials.")
     st.markdown("""
