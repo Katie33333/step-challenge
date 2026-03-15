@@ -4,6 +4,7 @@ from google.oauth2.service_account import Credentials
 from gspread.exceptions import WorksheetNotFound
 import pandas as pd
 from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 import plotly.express as px
 import plotly.graph_objects as go
 
@@ -20,7 +21,7 @@ SCOPES = [
     'https://www.googleapis.com/auth/drive'
 ]
 
-TARGET_DAILY_STEPS_PER_PERSON = 6000
+CENTRAL_TZ = ZoneInfo("America/Chicago")
 WEEK_DAYS = 7
 
 def get_google_sheet():
@@ -50,9 +51,9 @@ def get_google_sheet():
 
 def get_current_week_dates():
     """Get Monday-Sunday dates for the current week"""
-    today = datetime.now()
+    today = datetime.now(CENTRAL_TZ)
     # Find Monday of current week (0 = Monday, 6 = Sunday)
-    monday = today - timedelta(days=today.weekday())
+    monday = (today - timedelta(days=today.weekday())).replace(hour=0, minute=0, second=0, microsecond=0)
     week_dates = []
     for i in range(7):
         date = monday + timedelta(days=i)
@@ -150,11 +151,11 @@ def get_leaderboard(sheet, week_string):
 
 def post_message(message_sheet, name, message):
     """Append a message with a timestamp to the message worksheet."""
-    timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    timestamp = datetime.now(CENTRAL_TZ).strftime('%Y-%m-%d %H:%M:%S')
     message_sheet.append_row([timestamp, name.strip(), message.strip()])
 
 def get_recent_messages(message_sheet, week_dates, limit=50):
-    """Return messages from current week plus one day, ordered oldest->newest."""
+    """Return messages from current week plus one day, ordered newest->oldest."""
     try:
         data = message_sheet.get_all_records()
         if not data:
@@ -168,15 +169,36 @@ def get_recent_messages(message_sheet, week_dates, limit=50):
         df['ParsedTimestamp'] = pd.to_datetime(df['Timestamp'], errors='coerce')
 
         # Show only this challenge week with a one-day grace period before week start.
+        # Week boundaries are based on Central Time.
         # Example: if week starts Monday, include messages from Sunday 00:00 onward.
         window_start = (week_dates[0] - timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
         window_end = week_dates[6].replace(hour=23, minute=59, second=59, microsecond=999999)
 
         filtered = df[(df['ParsedTimestamp'] >= window_start) & (df['ParsedTimestamp'] <= window_end)]
         recent = filtered.sort_values('ParsedTimestamp', ascending=False).head(limit)
-        return recent.sort_values('ParsedTimestamp', ascending=True)[['Timestamp', 'Name', 'Message']]
+        return recent[['Timestamp', 'Name', 'Message']]
     except Exception:
         return pd.DataFrame(columns=['Timestamp', 'Name', 'Message'])
+
+def get_past_week_team_record(all_data, current_week):
+    """Return highest team total from weeks before the current week."""
+    if all_data.empty or 'Week' not in all_data.columns or 'Total' not in all_data.columns:
+        return None
+
+    historical = all_data[all_data['Week'] != current_week].copy()
+    if historical.empty:
+        return None
+
+    historical['Total'] = pd.to_numeric(historical['Total'], errors='coerce').fillna(0)
+    weekly_totals = historical.groupby('Week', as_index=False)['Total'].sum()
+    if weekly_totals.empty:
+        return None
+
+    best_week = weekly_totals.loc[weekly_totals['Total'].idxmax()]
+    return {
+        'week': best_week['Week'],
+        'total': int(best_week['Total'])
+    }
 
 # App title
 st.title("Step Challenge")
@@ -185,6 +207,7 @@ st.title("Step Challenge")
 week_dates = get_current_week_dates()
 week_string = get_week_string(week_dates)
 st.subheader(f"Week: {week_string}")
+st.info("Tip: Click the arrow in the top-left corner to open the sidebar and enter your steps.")
 
 # Connect to Google Sheets
 sheet, message_sheet = get_google_sheet()
@@ -234,26 +257,49 @@ if sheet and message_sheet:
     # Weekly challenge status
     st.header("🎯 Weekly Challenge Status")
     all_data = get_all_data(sheet)
-    week_data = all_data[all_data['Week'] == week_string]
+    week_data = all_data[all_data['Week'] == week_string].copy()
+    week_data['Total'] = pd.to_numeric(week_data['Total'], errors='coerce').fillna(0)
+    current_team_total = int(week_data['Total'].sum())
+    record = get_past_week_team_record(all_data, week_string)
 
-    if not week_data.empty:
-        avg_daily_per_person = week_data['Total'].mean() / WEEK_DAYS
-        progress_ratio = min(avg_daily_per_person / TARGET_DAILY_STEPS_PER_PERSON, 1.0)
+    if record:
+        goal_total = record['total']
+        progress_ratio = min(current_team_total / goal_total, 1.0) if goal_total > 0 else 0
 
-        st.progress(float(progress_ratio))
-        st.caption(
-            f"Team average: {int(avg_daily_per_person):,} / {TARGET_DAILY_STEPS_PER_PERSON:,} steps per person per day"
+        # Thermometer-style gauge for current week progress vs record goal.
+        thermometer = go.Figure(
+            go.Indicator(
+                mode="gauge+number",
+                value=current_team_total,
+                number={'valueformat': ',d', 'suffix': ' steps'},
+                gauge={
+                    'axis': {'range': [0, goal_total], 'tickformat': ',d'},
+                    'bar': {'color': '#E4572E'},
+                    'steps': [
+                        {'range': [0, goal_total], 'color': '#FBE9E5'}
+                    ],
+                    'threshold': {
+                        'line': {'color': '#2E7D32', 'width': 4},
+                        'thickness': 0.8,
+                        'value': goal_total
+                    }
+                },
+                title={'text': 'Current Team Total'}
+            )
         )
+        thermometer.update_layout(height=240, margin=dict(l=20, r=20, t=50, b=20))
+        st.plotly_chart(thermometer, use_container_width=True)
 
-        if avg_daily_per_person >= TARGET_DAILY_STEPS_PER_PERSON:
-            st.success("Goal reached! Keep it going this week.")
+        st.caption(f"Goal to beat: {goal_total:,} steps ({record['week']})")
+        st.caption(f"Progress: {progress_ratio * 100:.1f}%")
+        if current_team_total >= goal_total:
+            st.success("Record matched or beaten. New challenge: maintain or push higher.")
         else:
-            steps_remaining = TARGET_DAILY_STEPS_PER_PERSON - avg_daily_per_person
-            st.info(f"Need {int(steps_remaining):,} more average daily steps per person to hit the goal.")
+            remaining = goal_total - current_team_total
+            st.info(f"{remaining:,} more steps needed this week to beat the record.")
     else:
-        st.progress(0.0)
-        st.caption(f"Team average: 0 / {TARGET_DAILY_STEPS_PER_PERSON:,} steps per person per day")
-        st.info("No step entries yet for this week.")
+        st.info("No prior weeks yet. This week sets the benchmark to beat.")
+        st.metric("Current Team Total", f"{current_team_total:,}")
 
     st.divider()
 
@@ -339,7 +385,6 @@ if sheet and message_sheet:
             max_steps = week_data['Total'].max()
             st.metric("Highest Steps", f"{int(max_steps):,}")
 
-    
 else:
     st.warning("Unable to connect to Google Sheets. Please configure your credentials.")
     st.markdown("""
